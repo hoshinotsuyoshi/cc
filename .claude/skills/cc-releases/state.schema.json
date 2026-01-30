@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "cc-releases state",
+  "description": "Tracks last checked versions for cc-releases skill",
+  "type": "object",
+  "properties": {
+    "sources": {
+      "type": "object",
+      "description": "Key is source name from sources.yaml",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["releases", "commits"]
+          },
+          "last_version": {
+            "type": "string",
+            "description": "Last seen release version (for type: releases)"
+          },
+          "last_sha": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{7,40}$",
+            "description": "Last seen commit SHA (for type: commits)"
+          },
+          "last_checked": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Unix epoch seconds (UTC)"
+          }
+        },
+        "required": ["type", "last_checked"],
+        "unevaluatedProperties": false,
+        "allOf": [
+          {
+            "if": { "properties": { "type": { "const": "releases" } } },
+            "then": { "required": ["last_version"] }
+          },
+          {
+            "if": { "properties": { "type": { "const": "commits" } } },
+            "then": { "required": ["last_sha"] }
+          }
+        ]
+      }
+    }
+  },
+  "required": ["sources"],
+  "unevaluatedProperties": false
+}

@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=./state.schema.json
+# State tracking for cc-blog - auto-generated on first run
+# last_checked is Unix epoch seconds (UTC)
+# To reset: delete this file and run /cc-blog again
+
+blogs: {}
+# Example (auto-populated from blogs.yaml):
+# blogs:
+#   laiso:
+#     last_url: "https://blog.lai.so/entry/..."
+#     last_title: "記事タイトル"
+#     last_published: "2026-02-01"
+#     last_checked: 1738672200  # 2026-02-04T10:30:00Z

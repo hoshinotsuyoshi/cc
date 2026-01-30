@@ -1,0 +1,12 @@
+# Blogs to monitor for Claude Code tips
+# Copy this file to blogs.yaml and edit
+
+blogs:
+  - name: example
+    url: https://blog.example.net
+    description: AI design use cases
+
+  # Add more blogs:
+  # - name: example-blog
+  #   url: https://example.com/blog
+  #   description: What this blog covers

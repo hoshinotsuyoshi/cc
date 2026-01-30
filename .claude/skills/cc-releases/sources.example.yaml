@@ -1,0 +1,24 @@
+# Sources to monitor for Claude Code updates
+# Copy this file to sources.yaml and edit
+
+repositories:
+  - name: claude-code
+    repo: anthropics/claude-code
+    type: releases
+    description: Core updates and new features
+
+  - name: awesome-claude-code
+    repo: hesreallyhim/awesome-claude-code
+    type: commits
+    description: Community skills/hooks
+
+  - name: claude-code-tips
+    repo: ykdojo/claude-code-tips
+    type: commits
+    description: Practical tips
+
+  # Add more sources:
+  # - name: my-source
+  #   repo: owner/repo
+  #   type: releases  # or commits
+  #   description: What this source provides

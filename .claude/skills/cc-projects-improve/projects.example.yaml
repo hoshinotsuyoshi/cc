@@ -1,0 +1,15 @@
+# Define projects to analyze
+# Copy this file to projects.yaml and edit
+
+projects:
+  - name: my-project
+    path: /path/to/your/project
+    session_dir: ~/.claude/projects/-path-to-your-project
+
+  # Multiple projects example:
+  # - name: frontend
+  #   path: ~/code/frontend
+  #   session_dir: ~/.claude/projects/-Users-you-code-frontend
+  # - name: backend
+  #   path: ~/code/backend
+  #   session_dir: ~/.claude/projects/-Users-you-code-backend

@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=./state.schema.json
+# State tracking for cc-releases - auto-generated on first run
+# last_checked is Unix epoch seconds (UTC)
+# To reset: delete this file and run /cc-releases again
+
+sources: {}
+# Example (auto-populated from sources.yaml):
+# sources:
+#   claude-code:
+#     type: releases
+#     last_version: "v2.1.30"
+#     last_checked: 1738672200  # 2026-02-04T10:30:00Z
+#   awesome-claude-code:
+#     type: commits
+#     last_sha: "fe3c03d"
+#     last_checked: 1738672200  # 2026-02-04T10:30:00Z

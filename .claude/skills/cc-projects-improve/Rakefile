@@ -1,0 +1,276 @@
+require 'yaml'
+require 'json'
+require 'fileutils'
+require 'time'
+require 'open3'
+
+SKILL_DIR = __dir__
+PROJECTS_YAML = File.join(SKILL_DIR, 'projects.yaml')
+DB_FILE = File.join(SKILL_DIR, 'sessions.db')
+
+def red(str)   = "\e[31m#{str}\e[0m"
+def green(str) = "\e[32m#{str}\e[0m"
+
+def check_command(cmd)
+  system("which #{cmd} > /dev/null 2>&1") or abort red("Error: #{cmd} is required")
+end
+
+def sqlite3(db, sql)
+  `sqlite3 "#{db}" "#{sql}"`.strip
+end
+
+def sqlite3_exec(db, sql)
+  _stdout, stderr, status = Open3.capture3("sqlite3", db, stdin_data: sql)
+  unless status.success?
+    warn "SQLite error: #{stderr}" unless stderr.empty?
+    return false
+  end
+  true
+end
+
+desc "Run full analysis (default)"
+task default: :analyze
+
+desc "Run full analysis: import + analyze + bash commands + settings"
+task analyze: [:import, :sessions, :bash_commands, :settings]
+
+desc "Import session logs to SQLite"
+task :import, [:days] do |t, args|
+  days = (args[:days] || 7).to_i
+
+  check_command('yq')
+  check_command('jq')
+  check_command('sqlite3')
+
+  unless File.exist?(PROJECTS_YAML)
+    abort red("Error: #{PROJECTS_YAML} not found. Copy from projects.example.yaml")
+  end
+
+  since_date = (Time.now - days * 86400).strftime('%Y-%m-%dT00:00:00Z')
+
+  puts "=" * 50
+  puts "Claude Code Cross-Project Analysis"
+  puts "Period: Last #{days} days"
+  puts "=" * 50
+  puts
+  puts "=== Step 1: Import Session Data ==="
+  puts "Importing sessions since: #{since_date}"
+  puts "Database: #{DB_FILE}"
+
+  # Initialize DB
+  init_sql = <<~SQL
+    DROP TABLE IF EXISTS messages;
+    DROP TABLE IF EXISTS tool_uses;
+
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      source TEXT,
+      session_id TEXT,
+      type TEXT,
+      timestamp TEXT,
+      git_branch TEXT,
+      content TEXT
+    );
+
+    CREATE TABLE tool_uses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id TEXT,
+      source TEXT,
+      tool_name TEXT,
+      FOREIGN KEY (message_id) REFERENCES messages(id)
+    );
+
+    CREATE INDEX idx_messages_type ON messages(type);
+    CREATE INDEX idx_messages_timestamp ON messages(timestamp);
+    CREATE INDEX idx_messages_source ON messages(source);
+    CREATE INDEX idx_tool_uses_tool_name ON tool_uses(tool_name);
+  SQL
+
+  sqlite3_exec(DB_FILE, init_sql)
+  puts "Database initialized."
+
+  projects = YAML.load_file(PROJECTS_YAML)['projects'] || []
+
+  projects.each do |project|
+    name = project['name']
+    session_dir = project['session_dir']
+    session_dir = File.expand_path(session_dir.sub('~', ENV['HOME']))
+
+    unless Dir.exist?(session_dir)
+      puts "Skipping (not found): #{session_dir}"
+      next
+    end
+
+    puts "Processing: #{name}"
+
+    # Import using jq (complex JSON parsing)
+    jq_messages = <<~JQ
+      select(.timestamp != null and .timestamp >= "#{since_date}" and .uuid != null) |
+      @json
+    JQ
+
+    Dir.glob(File.join(session_dir, '*.jsonl')).each do |jsonl|
+      File.readlines(jsonl).each do |line|
+        begin
+          msg = JSON.parse(line)
+          next unless msg['timestamp'] && msg['uuid'] && msg['timestamp'] >= since_date
+
+          sql = "INSERT OR IGNORE INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)"
+          content = msg.dig('message', 'content')
+          content = content.is_a?(Array) ? content.to_json : content.to_s
+
+          # Escape for shell
+          values = [
+            msg['uuid'],
+            name,
+            msg['sessionId'] || '',
+            msg['type'] || '',
+            msg['timestamp'] || '',
+            msg['gitBranch'] || '',
+            content
+          ].map { |v| v.to_s.gsub("'", "''") }
+
+          insert_sql = "INSERT OR IGNORE INTO messages VALUES ('#{values.join("','")}')"
+          sqlite3_exec(DB_FILE, insert_sql)
+
+          # Extract tool uses
+          if msg['type'] == 'assistant' && content.include?('tool_use')
+            begin
+              tools = JSON.parse(content) rescue []
+              tools = [tools] unless tools.is_a?(Array)
+              tools.select { |t| t['type'] == 'tool_use' }.each do |tool|
+                tool_sql = "INSERT INTO tool_uses (message_id, source, tool_name) VALUES ('#{msg['uuid'].gsub("'", "''")}', '#{name.gsub("'", "''")}', '#{tool['name'].to_s.gsub("'", "''")}')"
+                sqlite3_exec(DB_FILE, tool_sql)
+              end
+            rescue
+            end
+          end
+        rescue JSON::ParserError
+          next
+        end
+      end
+    end
+  end
+
+  puts
+  puts "=== Import Complete ==="
+  puts sqlite3(DB_FILE, "SELECT 'Total messages: ' || COUNT(*) FROM messages")
+  puts sqlite3(DB_FILE, "SELECT 'Total tool uses: ' || COUNT(*) FROM tool_uses")
+end
+
+desc "Analyze sessions"
+task :sessions do
+  unless File.exist?(DB_FILE)
+    abort red("Error: Database not found. Run `rake import` first")
+  end
+
+  puts
+  puts "=== Step 2: Session Analysis ==="
+  puts "## Analysis Period"
+  puts sqlite3(DB_FILE, "SELECT MIN(timestamp) || ' ~ ' || MAX(timestamp) FROM messages")
+
+  puts
+  puts "## Basic Statistics"
+  puts sqlite3(DB_FILE, "SELECT '- Total messages: ' || COUNT(*) FROM messages")
+  puts sqlite3(DB_FILE, "SELECT '- Total tool uses: ' || COUNT(*) FROM tool_uses")
+
+  puts
+  puts "## Custom Command Usage"
+  puts "| Command | Count |"
+  puts "|---------|-------|"
+  result = sqlite3(DB_FILE, <<~SQL)
+    SELECT
+      substr(content, instr(content, '<command-name>') + 14,
+             instr(content, '</command-name>') - instr(content, '<command-name>') - 14) as command,
+      COUNT(*) as count
+    FROM messages
+    WHERE type = 'user' AND content LIKE '%<command-name>%'
+    GROUP BY command
+    ORDER BY count DESC
+  SQL
+  result.each_line { |l| puts "| #{l.strip.gsub('|', ' | ')} |" unless l.strip.empty? }
+
+  puts
+  puts "## Tool Usage TOP15"
+  puts "| Tool | Count |"
+  puts "|------|-------|"
+  result = sqlite3(DB_FILE, "SELECT tool_name || '|' || COUNT(*) FROM tool_uses GROUP BY tool_name ORDER BY COUNT(*) DESC LIMIT 15")
+  result.each_line { |l| puts "| #{l.strip.gsub('|', ' | ')} |" unless l.strip.empty? }
+
+  puts
+  puts "## MCP Tool Usage"
+  puts "| Tool | Count |"
+  puts "|------|-------|"
+  result = sqlite3(DB_FILE, "SELECT tool_name || '|' || COUNT(*) FROM tool_uses WHERE tool_name LIKE 'mcp__%' GROUP BY tool_name ORDER BY COUNT(*) DESC")
+  result.each_line { |l| puts "| #{l.strip.gsub('|', ' | ')} |" unless l.strip.empty? }
+
+  puts
+  puts "## Task (subagent) Usage"
+  puts sqlite3(DB_FILE, "SELECT '- Count: ' || COUNT(*) FROM tool_uses WHERE tool_name = 'Task'")
+end
+
+desc "Analyze bash commands"
+task :bash_commands, [:pattern] do |t, args|
+  unless File.exist?(DB_FILE)
+    abort red("Error: Database not found. Run `rake import` first")
+  end
+
+  puts
+  puts "=== Step 3: Bash Command Analysis ==="
+
+  %w[git gh pnpm npm docker make].each do |pattern|
+    result = `sqlite3 "#{DB_FILE}" "SELECT content FROM messages WHERE type = 'assistant' AND content LIKE '%tool_use%' AND content LIKE '%Bash%'" 2>/dev/null | grep -oE '"command":"[^"]*"' | sed 's/"command":"//;s/"$//' | sed 's/\\\\n/ /g' | grep -E "^#{pattern}" | cut -d' ' -f1,2 | sort | uniq -c | sort -rn | head -20 2>/dev/null`
+
+    next if result.strip.empty?
+
+    puts
+    puts "## Bash Command Details (pattern: ^#{pattern})"
+    puts
+    puts "| Count | Command |"
+    puts "|-------|---------|"
+    result.each_line do |line|
+      count, *cmd = line.strip.split
+      puts "| #{count} | #{cmd.join(' ')} |" if count
+    end
+  end
+end
+
+desc "Show project settings"
+task :settings do
+  unless File.exist?(PROJECTS_YAML)
+    abort red("Error: #{PROJECTS_YAML} not found")
+  end
+
+  puts
+  puts "=== Step 4: Project Settings Check ==="
+  puts "## settings.local.json by Project"
+  puts
+
+  projects = YAML.load_file(PROJECTS_YAML)['projects'] || []
+
+  projects.each do |project|
+    name = project['name']
+    path = project['path']
+    path = File.expand_path(path.sub('~', ENV['HOME']))
+    settings_file = File.join(path, '.claude', 'settings.local.json')
+
+    puts "### #{name}"
+    puts
+    if File.exist?(settings_file)
+      settings = JSON.parse(File.read(settings_file)) rescue {}
+      allow_count = settings.dig('permissions', 'allow')&.length || 0
+      puts "Allow rules: #{allow_count}"
+    else
+      puts "settings.local.json: None"
+    end
+    puts
+  end
+end
+
+desc "Clean database"
+task :clean do
+  if File.exist?(DB_FILE)
+    File.delete(DB_FILE)
+    puts green("Deleted: #{DB_FILE}")
+  end
+end
